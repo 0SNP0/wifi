@@ -5,15 +5,19 @@ from time import sleep
 import hmac,hashlib,binascii
 import random
 from sys import argv
+from scapy.layers.dot11 import *
+from scapy.layers.eap import *
+
 
 
 def get_random_mac(l=6):
     return ':'.join(list(map(lambda x:"%02x"%int(random.random()*0xff),range(l))))
 
-IFACE = 'wlan1'
+IFACE = 'wlp0s20f0u4i3'
 conf.iface = IFACE
 target = argv[1]
 source = "00:"+get_random_mac(5)
+print(f'STA MAC: {source}')
 essid = argv[2]
 password = argv[3]
 WAIT = 15
@@ -25,7 +29,8 @@ def get_beacon():
         seen_receiver = p[Dot11].addr1
         seen_sender = p[Dot11].addr2
         seen_bssid = p[Dot11].addr3
-        if target.lower() == seen_bssid.lower() and \
+        seen_essid = p[Dot11Elt].info
+        if target.lower() == seen_bssid.lower() and seen_essid == bytes(essid, 'utf8') and \
         Dot11Beacon in p:
             beacon = p
             print("[*] Beacon from Source {}".format(seen_bssid))
@@ -65,9 +70,11 @@ def get_association_response():
     sniff(iface=IFACE, lfilter=lambda p: p.haslayer(Dot11AssoResp), stop_filter=handle, timeout=WAIT)
 
 anonce = ""
+replay_counter: bytes
 def get_m1():
     def handle(p):
         global anonce
+        global replay_counter
         seen_receiver = p[Dot11].addr1
         seen_sender = p[Dot11].addr2
         seen_bssid = p[Dot11].addr3
@@ -76,6 +83,7 @@ def get_m1():
         target.lower() == seen_sender.lower() and \
         source.lower() == seen_receiver.lower() and \
         not int.from_bytes(bytes(p[EAPOL].payload)[1:3], byteorder='big') & key_mic_is_set:
+            replay_counter = bytes(p[EAPOL].payload)[5:5+8]
             anonce = bytes(p[EAPOL].payload)[13:13+32]
             print("[*] EAPOL M1 from Source {}".format(seen_bssid))
             return True
@@ -230,14 +238,14 @@ eapol_data_4 = bytearray(117)
 eapol_data_4[0:1] = b"\x02" # Key Description Type: EAPOL RSN Key
 eapol_data_4[1:1+2] = b"\x01\x0a" # Key Information: 0x010a
 eapol_data_4[3:3+2] = b"\x00\x00" # Key Length: 0
-eapol_data_4[5:5+8] = b"\x00\x00\x00\x00\x00\x00\x00\x01" # Replay Counter: 1
+eapol_data_4[5:5+8] = replay_counter # Replay Counter
 eapol_data_4[13:13+32] = snonce # WPA Key Nonce
 eapol_data_4[45:45+16] = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" # WPA Key IV
 eapol_data_4[61:61+8] = b"\x00\x00\x00\x00\x00\x00\x00\x00" # WPA Key RSC
 eapol_data_4[69:69+8] = b"\x00\x00\x00\x00\x00\x00\x00\x00" # WPA Key ID
 eapol_data_4[77:77+16] = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" # WPA Key MIC
 eapol_data_4[93:93+2] = b"\x00\x16" # WPA Key Data Length: 22
-eapol_data_4[95:95+26] = bytes(rsn_cap) # WPA Key Data Length
+eapol_data_4[95:95+22] = bytes(rsn_cap) # WPA Key Data Length
 
 mic = hmac.new(kck, b"\x01\x03\x00\x75" + bytes(eapol_data_4[:77]) + bytes.fromhex("00000000000000000000000000000000") + bytes(eapol_data_4[93:]), hashlib.sha1).digest()[0:16]
 eapol_data_4[77:77+16] = mic
